@@ -1,9 +1,13 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const ARK_API_KEY = process.env.ARK_API_KEY;
 // Support both naming conventions — VITE_ works in Vercel env vars, just not in Vite client code
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+// BytePlus ModelArk API (OpenAI-compatible)
+const ARK_BASE_URL = 'https://ark.ap-southeast.bytepluses.com/api/v3';
+const ARK_MODEL = 'seed-2-0-mini-260215';
 
 const SYSTEM_PROMPT = `You are a running companion. The user is on a solo run and talking to you through voice. Everything you say will be spoken aloud via text-to-speech, so keep responses natural and conversational. Do not use formatting, bullet points, or special characters.
 
@@ -45,9 +49,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   // Check env vars are configured
-  if (!OPENAI_API_KEY) {
-    console.error('OPENAI_API_KEY not set');
-    return res.status(500).json({ error: 'Server not configured: missing OPENAI_API_KEY' });
+  if (!ARK_API_KEY) {
+    console.error('ARK_API_KEY not set');
+    return res.status(500).json({ error: 'Server not configured: missing ARK_API_KEY' });
   }
   if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
     console.error('Supabase env vars not set. SUPABASE_URL:', !!SUPABASE_URL, 'SERVICE_KEY:', !!SUPABASE_SERVICE_KEY);
@@ -82,7 +86,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: 'Message is required' });
   }
 
-  // Build messages array for OpenAI
+  // Build messages array for AI
   const messages = [
     { role: 'system' as const, content: SYSTEM_PROMPT },
     ...(history || []).map((h: { role: string; content: string }) => ({
@@ -93,32 +97,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   ];
 
   try {
-    const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+    const aiRes = await fetch(`${ARK_BASE_URL}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        Authorization: `Bearer ${ARK_API_KEY}`,
       },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: ARK_MODEL,
         messages,
         temperature: 0.7,
         max_tokens: 1000,
-        response_format: { type: 'json_object' },
       }),
     });
 
-    if (!openaiRes.ok) {
-      const err = await openaiRes.text();
-      console.error('OpenAI error:', openaiRes.status, err);
+    if (!aiRes.ok) {
+      const err = await aiRes.text();
+      console.error('AI service error:', aiRes.status, err);
       return res.status(502).json({ error: 'AI service error', detail: err });
     }
 
-    const data = await openaiRes.json();
+    const data = await aiRes.json();
     const content = data.choices?.[0]?.message?.content;
 
     if (!content) {
-      console.error('Empty OpenAI response:', JSON.stringify(data));
+      console.error('Empty AI response:', JSON.stringify(data));
       return res.status(502).json({ error: 'Empty AI response' });
     }
 
