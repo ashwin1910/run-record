@@ -1,7 +1,8 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const SUPABASE_URL = process.env.VITE_SUPABASE_URL;
+// Support both naming conventions — VITE_ works in Vercel env vars, just not in Vite client code
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 const SYSTEM_PROMPT = `You are a running companion. The user is on a solo run and talking to you through voice. Everything you say will be spoken aloud via text-to-speech, so keep responses natural and conversational. Do not use formatting, bullet points, or special characters.
@@ -22,7 +23,7 @@ OUTPUT FORMAT:
 Always respond with valid JSON and nothing else:
 {
   "spoken_response": "Your conversational response here. Keep under 100 words unless depth was requested.",
-  "mode": "teach" | "capture" | "converse" | "recap",
+  "mode": "teach | capture | converse | recap",
   "auto_captures": [],
   "follow_up": null
 }
@@ -30,27 +31,48 @@ Always respond with valid JSON and nothing else:
 spoken_response is read aloud. Keep it natural. auto_captures can be empty. follow_up is null unless you have a genuinely interesting question.`;
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // CORS headers for Vercel
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  // Check env vars are configured
+  if (!OPENAI_API_KEY) {
+    console.error('OPENAI_API_KEY not set');
+    return res.status(500).json({ error: 'Server not configured: missing OPENAI_API_KEY' });
+  }
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+    console.error('Supabase env vars not set. SUPABASE_URL:', !!SUPABASE_URL, 'SERVICE_KEY:', !!SUPABASE_SERVICE_KEY);
+    return res.status(500).json({ error: 'Server not configured: missing Supabase credentials' });
   }
 
   // Verify auth
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Unauthorized' });
+    return res.status(401).json({ error: 'Unauthorized: no token' });
   }
 
   const token = authHeader.replace('Bearer ', '');
 
-  // Verify JWT with Supabase
   try {
     const verifyRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      headers: { Authorization: `Bearer ${token}`, apikey: SUPABASE_SERVICE_KEY || '' },
+      headers: { Authorization: `Bearer ${token}`, apikey: SUPABASE_SERVICE_KEY },
     });
     if (!verifyRes.ok) {
+      const verifyErr = await verifyRes.text();
+      console.error('Auth verify failed:', verifyRes.status, verifyErr);
       return res.status(401).json({ error: 'Invalid token' });
     }
-  } catch {
+  } catch (e) {
+    console.error('Auth verification error:', e);
     return res.status(401).json({ error: 'Auth verification failed' });
   }
 
@@ -62,12 +84,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // Build messages array for OpenAI
   const messages = [
-    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'system' as const, content: SYSTEM_PROMPT },
     ...(history || []).map((h: { role: string; content: string }) => ({
-      role: h.role,
+      role: h.role as 'user' | 'assistant',
       content: h.content,
     })),
-    { role: 'user', content: message },
+    { role: 'user' as const, content: message },
   ];
 
   try {
@@ -88,29 +110,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (!openaiRes.ok) {
       const err = await openaiRes.text();
-      console.error('OpenAI error:', err);
-      return res.status(502).json({ error: 'AI service error' });
+      console.error('OpenAI error:', openaiRes.status, err);
+      return res.status(502).json({ error: 'AI service error', detail: err });
     }
 
     const data = await openaiRes.json();
-    const content = data.choices[0]?.message?.content;
+    const content = data.choices?.[0]?.message?.content;
 
     if (!content) {
+      console.error('Empty OpenAI response:', JSON.stringify(data));
       return res.status(502).json({ error: 'Empty AI response' });
     }
 
-    // Parse the structured JSON response
     let parsed;
     try {
       parsed = JSON.parse(content);
     } catch {
-      // Fallback: treat as plain text response
       parsed = {
         spoken_response: content,
         mode: 'converse',
         auto_captures: [],
         follow_up: null,
       };
+    }
+
+    // Ensure response has all required fields
+    if (!parsed.spoken_response) {
+      parsed.spoken_response = content;
+    }
+    if (!parsed.auto_captures) {
+      parsed.auto_captures = [];
     }
 
     return res.status(200).json(parsed);
