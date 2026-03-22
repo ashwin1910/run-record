@@ -2,7 +2,6 @@ import { useRef, useState, useCallback, useEffect } from 'react';
 import type { VoiceState } from '../lib/types';
 
 const SILENCE_TIMEOUT_MS = 2000;
-const INTERRUPT_KEYWORD = 'pause';
 
 interface UseVoiceEngineOptions {
   onUserSpeech: (transcript: string) => Promise<string>;
